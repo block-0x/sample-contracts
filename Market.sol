@@ -27,6 +27,7 @@ contract NFTMarket is ReentrancyGuard {
     address payable owner;
     uint256 price;
     bool sold;
+    bool canceled;
   }
 
   mapping(uint256 => MarketItem) private idToMarketItem;
@@ -38,22 +39,44 @@ contract NFTMarket is ReentrancyGuard {
     address seller,
     address owner,
     uint256 price,
-    bool sold
+    bool sold,
+    bool canceled
+  );
+
+  event MaketItemSaled (
+    uint indexed itemId,
+    address buyer,
+    uint256 price
+  );
+
+  event ChangeItemPrice (
+    uint itemId,
+    uint256 newPrice
+  );
+
+  event CacnelMaketItem (
+    uint itemId
   );
 
   /* Returns the listing price of the contract */
   function getListingPrice() public view returns (uint256) {
     return listingPrice;
   }
-  
-  /* Places an item for sale on the marketplace */
+
+  /** 
+    * Places an item for sale on the marketplace
+    * @param nftContract: contract address of nft
+    * @param tokenId: token need sale
+    * @param price: price of nft
+  */
   function createMarketItem(
     address nftContract,
     uint256 tokenId,
     uint256 price
-  ) public payable nonReentrant {
+  ) external payable nonReentrant {
     require(price > 0, "Price must be at least 1 wei");
     require(msg.value == listingPrice, "Price must be equal to listing price");
+    require(IERC721(nftContract).ownerOf(tokenId) == msg.sender, "ERC721: transfer from incorrect owner");
 
     _itemIds.increment();
     uint256 itemId = _itemIds.current();
@@ -65,6 +88,7 @@ contract NFTMarket is ReentrancyGuard {
       payable(msg.sender),
       payable(address(0)),
       price,
+      false,
       false
     );
 
@@ -77,26 +101,76 @@ contract NFTMarket is ReentrancyGuard {
       msg.sender,
       address(0),
       price,
+      false,
       false
     );
   }
 
-  /* Creates the sale of a marketplace item */
-  /* Transfers ownership of the item, as well as funds between parties */
+  /** 
+    * Creates the sale of a marketplace item 
+    * Transfers ownership of the item, as well as funds between parties
+    * @param itemId: id of market item
+  */
   function createMarketSale(
-    address nftContract,
     uint256 itemId
-    ) public payable nonReentrant {
-    uint price = idToMarketItem[itemId].price;
-    uint tokenId = idToMarketItem[itemId].tokenId;
-    require(msg.value == price, "Please submit the asking price in order to complete the purchase");
+  ) external payable nonReentrant {
+    MarketItem memory marketItemData = idToMarketItem[itemId];
 
-    idToMarketItem[itemId].seller.transfer(msg.value);
-    IERC721(nftContract).transferFrom(address(this), msg.sender, tokenId);
+    require(msg.value == marketItemData.price, "Please submit the asking price in order to complete the purchase");
+    require(marketItemData.seller != msg.sender, "cannot buy from owner of item");
+    require(!marketItemData.sold, "item is sold");
+    require(!marketItemData.canceled, "item is canceled");
+
+    marketItemData.seller.transfer(msg.value);
+    IERC721(marketItemData.nftContract).transferFrom(address(this), msg.sender, marketItemData.tokenId);
+    
     idToMarketItem[itemId].owner = payable(msg.sender);
     idToMarketItem[itemId].sold = true;
     _itemsSold.increment();
     payable(owner).transfer(listingPrice);
+
+    emit MaketItemSaled(
+      itemId, 
+      msg.sender, 
+      msg.value
+    );
+  }
+  
+  /** 
+    * change price of market item
+    * @param itemId: id of market item
+    * @param newPrice: new price of item
+  */
+  function changeItemPrice(uint256 itemId, uint256 newPrice) external nonReentrant {
+    MarketItem memory marketItemData = idToMarketItem[itemId];
+    require(marketItemData.price != newPrice, "New price The new price must not be the same as the old price");
+    require(marketItemData.seller == msg.sender, "change price from incorrect owner");
+    require(!marketItemData.sold, "item is sold");
+    require(!marketItemData.canceled, "item is canceled");
+
+    idToMarketItem[itemId].price = newPrice;
+    marketItemData.seller.transfer(listingPrice);
+
+    emit ChangeItemPrice(
+      itemId, 
+      newPrice
+    );
+  }
+
+  /** 
+    * cancel market item
+    * @param itemId: id of market item
+  */
+  function cancelMaketItem(uint256 itemId) external nonReentrant {
+    MarketItem memory marketItemData = idToMarketItem[itemId];
+    require(marketItemData.seller == msg.sender, "cancel item from incorrect owner");
+    require(!marketItemData.sold, "item is sold");
+    require(!marketItemData.canceled, "item is canceled");
+
+    idToMarketItem[itemId].canceled = true;
+    IERC721(marketItemData.nftContract).transferFrom(address(this), msg.sender, marketItemData.tokenId);
+
+    emit CacnelMaketItem(itemId);
   }
 
   /* Returns all unsold market items */
@@ -149,7 +223,7 @@ contract NFTMarket is ReentrancyGuard {
 
     for (uint i = 0; i < totalItemCount; i++) {
       if (idToMarketItem[i + 1].seller == msg.sender) {
-        itemCount += 1;
+        itemCount += 1; 
       }
     }
 
